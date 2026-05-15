@@ -8,11 +8,11 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  APP_NAME: mmclaw  # 💡 统一配置你的应用名称
+  APP_NAME: mmclaw  # 统一配置你的应用名称
 
 jobs:
   # =================================================================
-  # Job 1: 负责编译桌面端原生/常规架构 (macOS & Windows & Linux amd64)
+  # Job 1: 负责常规架构编译 (macOS & Windows & Linux amd64)
   # =================================================================
   build-native:
     strategy:
@@ -67,6 +67,9 @@ jobs:
           msystem: UCRT64
           update: true
           install: mingw-w64-ucrt-x86_64-gcc
+      - name: Add MSYS2 to Path
+        if: matrix.os == 'windows-latest' && matrix.arch == 'amd64'
+        run: echo "C:\msys64\ucrt64\bin" >> $GITHUB_PATH
 
       - name: Install LLVM/Clang (Windows ARM64)
         if: matrix.os == 'windows-latest' && matrix.arch == 'arm64'
@@ -91,7 +94,6 @@ jobs:
           GOARCH: ${{ matrix.arch }}
           CC: ${{ matrix.os == 'windows-latest' && matrix.arch == 'amd64' && 'gcc' || (matrix.os == 'windows-latest' && matrix.arch == 'arm64' && 'clang --target=aarch64-w64-windows-gnu' || '') }}
 
-      # Pemb备发布产物
       - name: Package Artifacts
         run: |
           if [ "${{ matrix.platform }}" = "darwin" ]; then
@@ -99,22 +101,15 @@ jobs:
             zip -r "../${{ env.APP_NAME }}-mac-${{ matrix.arch }}.zip" "${{ env.APP_NAME }}.app"
           elif [ "${{ matrix.platform }}" = "windows" ]; then
             echo "=== 开始处理 Windows 产物 ==="
-            # 💡 在项目根目录下建立两个绝对安全的文件夹，绝不往外跳
             mkdir -p ./windows-source
             mkdir -p ./windows-out
-            
             TARGET_DIR="."
             if [ -d "build/bin" ]; then TARGET_DIR="build/bin"; elif [ -d "bin" ]; then TARGET_DIR="bin"; fi
-            
             cp "$TARGET_DIR/${{ env.APP_NAME }}.exe" ./windows-source/
             cp $TARGET_DIR/*.dll ./windows-source/ 2>/dev/null || true
-            
-            # 💡 直接把 ZIP 产物生成到根目录下的 ./windows-out 文件夹里
-            7z a "./windows-out/${{ env.APP_NAME }}-windows-${{ matrix.arch }}.zip" ./windows-source/*
-            
-            # 💡 把生成的压缩包移动到根目录下，让后面的 Release 插件一抬眼就能看见
+            "/c/Program Files/7-Zip/7z.exe" a "./windows-out/${{ env.APP_NAME }}-windows-${{ matrix.arch }}.zip" ./windows-source/*
             mv ./windows-out/*.zip ./
-            echo "=== Windows 产物打包完毕，已放入根目录 ==="
+            echo "=== Windows 产物打包完毕 ==="
             ls -la *.zip
           elif [ "${{ matrix.platform }}" = "linux" ]; then
             cd bin
@@ -145,24 +140,17 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # =================================================================
-  # Job 2: 利用 GitHub 官方原生 ARM64 虚拟机进行高速物理编译（推荐 🌟）
+  # Job 2: 独立使用 ubuntu-latest (x86_64) 通过 Docker 编译 Linux ARM64
   # =================================================================
   build-linux-arm64:
-    # 💡 核心改变：把 ubuntu-latest 换成 ubuntu-latest-arm64
-    # 这样 GitHub 会直接分给你一台真正的 ARM64 架构服务器！
-    runs-on: ubuntu-latest-arm64
+    runs-on: ubuntu-latest  # 💡 保持传统的纯 x86_64 机器
     permissions:
       contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 💡 既然是真正的 ARM64 机器，直接像常规环境一样通过 apt 安装依赖，绝对不会有任何头文件冲突
-      - name: Install Linux Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config build-essential
-
+      # 💡 极其纯净：这里【不安装】宿主机的 apt-get 依赖，防止污染 Docker 环境变量
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
@@ -174,10 +162,15 @@ jobs:
           go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.91
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
-      # 💡 重点：还原成最简单的本地打包，不需要任何 Docker，不需要设置任何乱七八糟的 CC 变量！
-      - name: Build Natively on ARM64
+      - name: Build with Docker Cross-Compiler
         run: |
-          task package ARCH=arm64
+          echo "Initializing official wails-cross Docker image..."
+          wails3 task setup:docker
+          
+          echo "Running package for linux arm64 inside Docker..."
+          # 💡 核心改动：直接调用 wails3 命令行显式进行 linux/arm64 构建，
+          # 这样 Wails 底层会自动向 Docker 容器内下载所需的 GTK3/WebKit 交叉 C 依赖，彻底解决丢失链接库问题。
+          wails3 build -platform linux/arm64 -package
         shell: bash
 
       - name: Package Artifacts
