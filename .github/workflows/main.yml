@@ -22,6 +22,7 @@ jobs:
 
       matrix:
         include:
+          # macOS
           - os: macos-latest
             platform: darwin
             arch: amd64
@@ -30,6 +31,7 @@ jobs:
             platform: darwin
             arch: arm64
 
+          # Windows
           - os: windows-latest
             platform: windows
             arch: amd64
@@ -38,6 +40,7 @@ jobs:
             platform: windows
             arch: arm64
 
+          # Linux
           - os: ubuntu-latest
             platform: linux
             arch: amd64
@@ -45,35 +48,49 @@ jobs:
           - os: ubuntu-latest
             platform: linux
             arch: arm64
-            docker: true
 
     steps:
+      # =========================================================
+      # Checkout
+      # =========================================================
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Linux native deps
+      # =========================================================
+      # Linux Native Dependencies (ONLY linux amd64)
+      # =========================================================
       - name: Install Linux Dependencies
         if: matrix.platform == 'linux' && matrix.arch == 'amd64'
         run: |
           sudo apt-get update
+
           sudo apt-get install -y \
             libgtk-3-dev \
             libwebkit2gtk-4.1-dev \
             pkg-config \
             build-essential
 
+      # =========================================================
+      # Setup Go
+      # =========================================================
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
 
+      # =========================================================
+      # Install Wails3 + Task
+      # =========================================================
       - name: Install Tools
         run: |
           go install github.com/go-task/task/v3/cmd/task@latest
           go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.91
+
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
-      # Windows AMD64
+      # =========================================================
+      # Windows AMD64 Compiler
+      # =========================================================
       - name: Install MinGW
         if: matrix.platform == 'windows' && matrix.arch == 'amd64'
         uses: msys2/setup-msys2@v2
@@ -86,7 +103,9 @@ jobs:
         if: matrix.platform == 'windows' && matrix.arch == 'amd64'
         run: echo "C:\msys64\ucrt64\bin" >> $GITHUB_PATH
 
-      # Windows ARM64
+      # =========================================================
+      # Windows ARM64 Compiler
+      # =========================================================
       - name: Install LLVM
         if: matrix.platform == 'windows' && matrix.arch == 'arm64'
         run: |
@@ -94,22 +113,11 @@ jobs:
           echo "C:\Program Files\LLVM\bin" >> $GITHUB_PATH
         shell: bash
 
-      # Linux ARM64 Docker Cross Compile
-      - name: Setup QEMU
-        if: matrix.docker == true
-        uses: docker/setup-qemu-action@v3
-
-      - name: Setup Buildx
-        if: matrix.docker == true
-        uses: docker/setup-buildx-action@v3
-
-      - name: Setup Wails Docker
-        if: matrix.docker == true
-        run: |
-          wails3 task setup:docker
-
-      # Build
-      - name: Build App
+      # =========================================================
+      # Native Build (ALL except Linux ARM64)
+      # =========================================================
+      - name: Build Native App
+        if: matrix.platform != 'linux' || matrix.arch != 'arm64'
         shell: bash
         env:
           CGO_ENABLED: 1
@@ -118,39 +126,88 @@ jobs:
           CC: ${{ matrix.platform == 'windows' && matrix.arch == 'amd64' && 'gcc' || (matrix.platform == 'windows' && matrix.arch == 'arm64' && 'clang --target=aarch64-w64-windows-gnu' || '') }}
         run: |
 
-          if [ "${{ matrix.docker }}" = "true" ]; then
+          echo "Building natively..."
 
-            echo "Building with Docker cross compiler..."
+          if [ "${{ matrix.platform }}" = "windows" ]; then
 
-            wails3 build \
-              -platform linux/arm64 \
-              -package \
-              -docker
+            task build ARCH=${{ matrix.arch }}
 
           else
 
-            echo "Building natively..."
-
-            if [ "${{ matrix.platform }}" = "windows" ]; then
-              task build ARCH=${{ matrix.arch }}
-            else
-              task package ARCH=${{ matrix.arch }}
-            fi
+            task package ARCH=${{ matrix.arch }}
 
           fi
 
-      # Package
+      # =========================================================
+      # Linux ARM64 Build (Docker Cross Compile)
+      # =========================================================
+      - name: Build Linux ARM64
+        if: matrix.platform == 'linux' && matrix.arch == 'arm64'
+        shell: bash
+        run: |
+
+          docker pull ghcr.io/wailsapp/wails:v3-alpha
+
+          docker run --rm \
+            -u $(id -u):$(id -g) \
+            -v "${{ github.workspace }}:/project" \
+            -w /project \
+            ghcr.io/wailsapp/wails:v3-alpha \
+            bash -c "
+
+              apt-get update
+
+              apt-get install -y \
+                libgtk-3-dev \
+                libwebkit2gtk-4.1-dev \
+                pkg-config \
+                build-essential
+
+              go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.91
+
+              export PATH=\$PATH:/root/go/bin
+
+              wails3 build \
+                -platform linux/arm64 \
+                -package
+            "
+
+      # =========================================================
+      # Debug Output
+      # =========================================================
+      - name: Debug Build Output
+        shell: bash
+        run: |
+          echo "=== ROOT ==="
+          ls -la
+
+          echo "=== BIN ==="
+          ls -la bin || true
+
+          echo "=== BUILD/BIN ==="
+          ls -la build/bin || true
+
+      # =========================================================
+      # Package Artifacts
+      # =========================================================
       - name: Package Artifacts
         shell: bash
         run: |
 
+          # =========================
+          # macOS
+          # =========================
           if [ "${{ matrix.platform }}" = "darwin" ]; then
 
             cd bin
 
-            zip -r "../${{ env.APP_NAME }}-mac-${{ matrix.arch }}.zip" \
+            zip -r \
+              "../${{ env.APP_NAME }}-mac-${{ matrix.arch }}.zip" \
               "${{ env.APP_NAME }}.app"
 
+          # =========================
+          # Windows
+          # =========================
           elif [ "${{ matrix.platform }}" = "windows" ]; then
 
             mkdir -p ./windows-source
@@ -165,25 +222,37 @@ jobs:
             fi
 
             cp "$TARGET_DIR/${{ env.APP_NAME }}.exe" ./windows-source/
+
             cp $TARGET_DIR/*.dll ./windows-source/ 2>/dev/null || true
 
-            7z a \
+            "/c/Program Files/7-Zip/7z.exe" a \
               "./windows-out/${{ env.APP_NAME }}-windows-${{ matrix.arch }}.zip" \
               ./windows-source/*
 
             mv ./windows-out/*.zip ./
 
+          # =========================
+          # Linux
+          # =========================
           elif [ "${{ matrix.platform }}" = "linux" ]; then
 
             cd bin
 
+            # AppImage / deb / rpm
             for f in *.{AppImage,deb,rpm}; do
+
               if [ -f "$f" ]; then
+
                 ext="${f##*.}"
-                mv "$f" "../${{ env.APP_NAME }}-linux-${{ matrix.arch }}.${ext}"
+
+                mv "$f" \
+                  "../${{ env.APP_NAME }}-linux-${{ matrix.arch }}.${ext}"
+
               fi
+
             done
 
+            # Binary tar.gz
             if [ -f "${{ env.APP_NAME }}" ]; then
 
               mkdir -p linux-release
@@ -200,7 +269,9 @@ jobs:
 
           fi
 
-      # Release
+      # =========================================================
+      # Upload Release Assets
+      # =========================================================
       - name: Upload Release Assets
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
