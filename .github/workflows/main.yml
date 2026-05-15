@@ -91,7 +91,7 @@ jobs:
           GOARCH: ${{ matrix.arch }}
           CC: ${{ matrix.os == 'windows-latest' && matrix.arch == 'amd64' && 'gcc' || (matrix.os == 'windows-latest' && matrix.arch == 'arm64' && 'clang --target=aarch64-w64-windows-gnu' || '') }}
 
-       Pemb备发布产物
+      # Pemb备发布产物
       - name: Package Artifacts
         run: |
           if [ "${{ matrix.platform }}" = "darwin" ]; then
