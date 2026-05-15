@@ -146,6 +146,7 @@ jobs:
         run: |
           # 启动一个 arm64v8 的 Ubuntu 容器，映射当前工作目录
           docker run --rm \
+            --platform linux/arm64 \
             -v ${{ github.workspace }}:/workspace \
             -w /workspace \
             arm64v8/ubuntu:22.04 /bin/bash -c "
