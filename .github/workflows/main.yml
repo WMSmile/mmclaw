@@ -98,13 +98,24 @@ jobs:
             cd bin
             zip -r "../${{ env.APP_NAME }}-mac-${{ matrix.arch }}.zip" "${{ env.APP_NAME }}.app"
           elif [ "${{ matrix.platform }}" = "windows" ]; then
+            echo "=== 开始处理 Windows 产物 ==="
+            # 💡 在项目根目录下建立两个绝对安全的文件夹，绝不往外跳
+            mkdir -p ./windows-source
+            mkdir -p ./windows-out
+            
             TARGET_DIR="."
             if [ -d "build/bin" ]; then TARGET_DIR="build/bin"; elif [ -d "bin" ]; then TARGET_DIR="bin"; fi
-            mkdir -p ../windows-release
-            cp "$TARGET_DIR/${{ env.APP_NAME }}.exe" ../windows-release/
-            cp $TARGET_DIR/*.dll ../windows-release/ 2>/dev/null || true
-            cd ../windows-release
-            7z a "../${{ env.APP_NAME }}-windows-${{ matrix.arch }}.zip" ./*
+            
+            cp "$TARGET_DIR/${{ env.APP_NAME }}.exe" ./windows-source/
+            cp $TARGET_DIR/*.dll ./windows-source/ 2>/dev/null || true
+            
+            # 💡 直接把 ZIP 产物生成到根目录下的 ./windows-out 文件夹里
+            7z a "./windows-out/${{ env.APP_NAME }}-windows-${{ matrix.arch }}.zip" ./windows-source/*
+            
+            # 💡 把生成的压缩包移动到根目录下，让后面的 Release 插件一抬眼就能看见
+            mv ./windows-out/*.zip ./
+            echo "=== Windows 产物打包完毕，已放入根目录 ==="
+            ls -la *.zip
           elif [ "${{ matrix.platform }}" = "linux" ]; then
             cd bin
             for f in *.{AppImage,deb,rpm}; do
