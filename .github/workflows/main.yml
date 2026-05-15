@@ -96,12 +96,14 @@ jobs:
             
           elif [ "${{ matrix.platform }}" = "windows" ]; then
             # Windows: 打包新应用 mmclaw.exe 和相关的 dll
+            cd bin
             mkdir -p windows-release
             cp ${{ env.APP_NAME }}.exe windows-release/
             cp *.dll windows-release/ 2>/dev/null || true
             cd windows-release
-            zip -r "../../${{ env.APP_NAME }}-windows-${{ matrix.arch }}.zip" .
-            cd ..
+            
+            # 💡 GitHub Windows 镜像自带 7z，用它来打包成标准 zip 极其稳定
+            7z a ../../${{ env.APP_NAME }}-windows-amd64.zip ./*
             
           elif [ "${{ matrix.platform }}" = "linux" ]; then
             # 1. 处理安装包 (AppImage, deb, rpm)
