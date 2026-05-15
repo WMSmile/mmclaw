@@ -167,7 +167,7 @@ jobs:
             cp "$TARGET_DIR/${{ env.APP_NAME }}.exe" ./windows-source/
             cp $TARGET_DIR/*.dll ./windows-source/ 2>/dev/null || true
 
-            "/c/Program Files/7-Zip/7z.exe" a \
+            7z a \
               "./windows-out/${{ env.APP_NAME }}-windows-${{ matrix.arch }}.zip" \
               ./windows-source/*
 
