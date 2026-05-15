@@ -17,9 +17,11 @@ tasks:
   build:
     summary: Builds the application for Linux
     cmds:
-      # 💡 优化后的逻辑：只要本地有 C 编译器 (HAS_CC)，且系统是 Linux，就允许走 native 编译
-      # 这样在 GitHub Actions 中，我们安装了 aarch64-linux-gnu-gcc 就能完美触发 native 交叉编译
-      - task: '{{if and (eq OS "linux") (eq .HAS_CC "true")}}build:native{{else}}build:docker{{end}}'
+      # Linux requires CGO - use Docker when:
+      # 1. Cross-compiling from non-Linux, OR
+      # 2. No C compiler is available, OR
+      # 3. Target architecture differs from host architecture (cross-arch compilation)
+      - task: '{{if and (eq OS "linux") (eq .HAS_CC "true") (eq .TARGET_ARCH ARCH)}}build:native{{else}}build:docker{{end}}'
         vars:
           ARCH: '{{.ARCH}}'
           DEV: '{{.DEV}}'
@@ -28,9 +30,11 @@ tasks:
     vars:
       DEFAULT_OUTPUT: '{{.BIN_DIR}}/{{.APP_NAME}}'
       OUTPUT: '{{ .OUTPUT | default .DEFAULT_OUTPUT }}'
+      # Determine target architecture (defaults to host ARCH if not specified)
       TARGET_ARCH: '{{.ARCH | default ARCH}}'
+      # Check if a C compiler is available (gcc or clang)
       HAS_CC:
-        sh: '(command -v gcc >/dev/null 2>&1 || command -v clang >/dev/null 2>&1 || command -v aarch64-linux-gnu-gcc >/dev/null 2>&1) && echo "true" || echo "false"'
+        sh: '(command -v gcc >/dev/null 2>&1 || command -v clang >/dev/null 2>&1) && echo "true" || echo "false"'
 
   build:native:
     summary: Builds the application natively on Linux
