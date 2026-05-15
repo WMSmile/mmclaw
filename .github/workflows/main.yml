@@ -156,14 +156,16 @@ jobs:
           go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.91
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
-      # 💡 让官方 Wails Docker 镜像纯净启动，接管一切交叉编译
+      # 💡 修改后的 Job 2 构建步骤
       - name: Build with Docker Cross-Compiler
         run: |
           echo "Initializing official wails-cross Docker image..."
           wails3 task setup:docker
           
-          echo "Running package for linux arm64..."
-          task package ARCH=arm64
+          echo "Running package for linux arm64 with internal package installation..."
+          # 💡 核心修正：通过传入带有前缀的参数，或在 Task 调用前，让 Wails 知道需要补齐容器内的 C 依赖
+          # 如果 Wails3 允许通过 wails3 build 传参，我们直接改用 wails3 命令行显式交叉编译，它能更聪明地处理依赖：
+          wails3 build -platform linux/arm64 -package
         shell: bash
         # 💡 这里完全不声明任何 GOOS, GOARCH 或 CC 全局变量！避免把宿主机环境漏给 Docker
 
