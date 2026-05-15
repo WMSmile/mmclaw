@@ -96,14 +96,25 @@ jobs:
             
           elif [ "${{ matrix.platform }}" = "windows" ]; then
             # Windows: 打包新应用 mmclaw.exe 和相关的 dll
-            cd bin
-            mkdir -p windows-release
-            cp ${{ env.APP_NAME }}.exe windows-release/
-            cp *.dll windows-release/ 2>/dev/null || true
-            cd windows-release
+            # 1. 探测 Wails3 实际的输出目录（优先 build/bin，其次 bin，最后当前目录）
+            TARGET_DIR="."
+            if [ -d "build/bin" ]; then
+              TARGET_DIR="build/bin"
+            elif [ -d "bin" ]; then
+              TARGET_DIR="bin"
+            fi
+            echo "Found Wails build output directory: $TARGET_DIR"
             
-            # 💡 GitHub Windows 镜像自带 7z，用它来打包成标准 zip 极其稳定
-            7z a ../../${{ env.APP_NAME }}-windows-amd64.zip ./*
+            # 2. 创建一个绝对干净的临时目录用来收集发布文件
+            mkdir -p ../windows-release
+            
+            # 3. 从精确的输出目录下拷贝 exe 和当前配套的 dll（不污染、不漏拷）
+            cp "$TARGET_DIR/${{ env.APP_NAME }}.exe" ../windows-release/
+            cp $TARGET_DIR/*.dll ../windows-release/ 2>/dev/null || true
+            
+            # 4. 进入干净的发布目录，利用 7z 压缩
+            cd ../windows-release
+            7z a "../${{ env.APP_NAME }}-windows-amd64.zip" ./*
             
           elif [ "${{ matrix.platform }}" = "linux" ]; then
             # 1. 处理安装包 (AppImage, deb, rpm)
