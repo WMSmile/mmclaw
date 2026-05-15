@@ -1,0 +1,135 @@
+name: Build and Release Wails3 App
+
+on:
+  push:
+    tags:
+      - 'v*' # 当你推送 v1.0.0 等标签时触发
+  workflow_dispatch: # 允许手动触发测试
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: darwin
+            arch: amd64
+          - os: macos-latest
+            platform: darwin
+            arch: arm64
+          - os: windows-latest
+            platform: windows
+            arch: amd64
+          - os: ubuntu-latest
+            platform: linux
+            arch: amd64
+
+    runs-on: ${{ matrix.os }}
+    # 关键：添加以下权限配置
+    permissions:
+      contents: write  # 允许创建 Release 并上传文件
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 1. 安装系统依赖 (Linux 必须)
+      - name: Install Linux Dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config build-essential
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      # 2. 安装 Task 和 Wails3 CLI
+      - name: Install Tools
+        run: |
+          # 安装 Task
+          go install github.com/go-task/task/v3/cmd/task@latest
+          # 安装 Wails3
+          go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.91
+          # 确保它们都在 PATH 中
+          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+
+      # 3. 针对 Windows 准备 CGO 编译器 (仅在 Windows 节点执行)
+      - name: Install MinGW (Windows only)
+        if: matrix.os == 'windows-latest'
+        uses: egor-tensin/setup-mingw@v2
+        with:
+          platform: x64
+
+      # 4. 构建步骤
+      - name: Build with Task
+        run: |
+          if [ "${{ matrix.platform }}" = "darwin" ]; then
+            task package ARCH=${{ matrix.arch }}
+          elif [ "${{ matrix.platform }}" = "linux" ]; then
+            # Linux 运行 package 任务来生成 AppImage/deb/rpm
+            task package ARCH=${{ matrix.arch }}
+          else
+            CGO_ENABLED=1 task build ARCH=${{ matrix.arch }}
+          fi
+        shell: bash
+        env:
+          CGO_ENABLED: 1
+          GOOS: ${{ matrix.platform }}
+          GOARCH: ${{ matrix.arch }}
+          CC: ${{ matrix.os == 'windows-latest' && 'gcc' || '' }}
+
+      # 5. 准备发布产物
+      - name: Package Artifacts
+        run: |
+          cd bin
+          if [ "${{ matrix.platform }}" = "darwin" ]; then
+            # macOS: .app 本身就是文件夹，直接打成 zip 即可（已包含内部库）
+            zip -r "../video-toolkit-mac-${{ matrix.arch }}.zip" "video-toolkit.app"
+            
+          elif [ "${{ matrix.platform }}" = "windows" ]; then
+            # Windows: 必须把 .exe 和 .dll 一起打包，否则无法运行
+            mkdir -p windows-release
+            cp video-toolkit.exe windows-release/
+            cp *.dll windows-release/ 2>/dev/null || true
+            cd windows-release
+            zip -r "../../video-toolkit-windows-${{ matrix.arch }}.zip" .
+            cd ..
+            
+          elif [ "${{ matrix.platform }}" = "linux" ]; then
+            # 1. 处理安装包 (AppImage, deb, rpm) - 这些包内部已封装了库
+            for f in *.{AppImage,deb,rpm}; do
+              if [ -f "$f" ]; then
+                ext="${f##*.}"
+                mv "$f" "../video-toolkit-linux-${{ matrix.arch }}.${ext}"
+              fi
+            done
+            
+            # 2. 如果你也想提供“绿色版”二进制压缩包
+            if [ -f "video-toolkit" ]; then
+              mkdir -p linux-release
+              cp video-toolkit linux-release/
+              cp *.so linux-release/ 2>/dev/null || true
+              tar -czf "../video-toolkit-linux-${{ matrix.arch }}.tar.gz" -C linux-release .
+            fi
+          fi
+
+      # 6. 发布产物
+      - name: Upload Release Assets
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            *.zip
+            video-toolkit-windows-*
+            video-toolkit-linux-*
+            *.AppImage
+            *.deb
+            *.rpm
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
