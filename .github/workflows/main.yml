@@ -59,12 +59,14 @@ jobs:
           # 确保它们都在 PATH 中
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
-      # 3. 针对 Windows 准备 CGO 编译器 (仅在 Windows 节点执行)
+      # 3. 针对 Windows 准备 CGO 编译器 (使用更稳定的 MSYS2)
       - name: Install MinGW (Windows only)
         if: matrix.os == 'windows-latest'
-        uses: egor-tensin/setup-mingw@v2
+        uses: msys2/setup-msys2@v2
         with:
-          platform: x64
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-gcc
 
       # 4. 构建步骤
       - name: Build with Task
