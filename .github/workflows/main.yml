@@ -8,10 +8,13 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  APP_NAME: mmclaw  # 💡 统一配置应用名称
+  APP_NAME: mmclaw  # 💡 统一配置你的应用名称
 
 jobs:
-  build:
+  # =================================================================
+  # Job 1: 负责编译桌面端原生/常规架构 (macOS & Windows & Linux amd64)
+  # =================================================================
+  build-native:
     strategy:
       fail-fast: false
       matrix:
@@ -25,49 +28,38 @@ jobs:
           - os: windows-latest
             platform: windows
             arch: amd64
-          # 💡 新增：Windows ARM64 支持
           - os: windows-latest
             platform: windows
             arch: arm64
           - os: ubuntu-latest
             platform: linux
             arch: amd64
-          # 💡 新增：Linux ARM64 支持
-          - os: ubuntu-latest
-            platform: linux
-            arch: arm64
 
     runs-on: ${{ matrix.os }}
     permissions:
-      contents: write  # 允许创建 Release 并上传文件
+      contents: write
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 1. 安装系统依赖 (Linux 必须)
       - name: Install Linux Dependencies
-        if: runner.os == 'Linux'
+        if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
-          # 💡 针对 Linux ARM64 交叉编译，补充 gcc-aarch64-linux-gnu 编译器
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config build-essential \
-            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config build-essential
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
 
-      # 2. 安装 Task 和 Wails3 CLI
       - name: Install Tools
         run: |
           go install github.com/go-task/task/v3/cmd/task@latest
           go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.91
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
-      # 3. 针对 Windows 准备 CGO 编译器
-      # AMD64 使用稳定的 MSYS2 环境
       - name: Install MinGW (Windows AMD64)
         if: matrix.os == 'windows-latest' && matrix.arch == 'amd64'
         uses: msys2/setup-msys2@v2
@@ -76,96 +68,51 @@ jobs:
           update: true
           install: mingw-w64-ucrt-x86_64-gcc
 
-      # ARM64 使用 LLVM/Clang 进行跨架构 CGO 编译
       - name: Install LLVM/Clang (Windows ARM64)
         if: matrix.os == 'windows-latest' && matrix.arch == 'arm64'
         run: |
           choco install llvm -y
-          # 将 clang 路径写入环境变量
           echo "C:\Program Files\LLVM\bin" >> $GITHUB_PATH
         shell: bash
 
-      # 4. 构建步骤 (已彻底隔离环境变量，防止污染 Linux Docker)
       - name: Build with Task
         run: |
           if [ "${{ matrix.platform }}" = "darwin" ]; then
-            # macOS 需要这些环境变量
-            export GOOS=darwin
-            export GOARCH=${{ matrix.arch }}
             task package ARCH=${{ matrix.arch }}
-            
           elif [ "${{ matrix.platform }}" = "linux" ]; then
-            if [ "${{ matrix.arch }}" = "arm64" ]; then
-               echo "Initializing official wails-cross Docker image..."
-               wails3 task setup:docker
-            fi
-            
-            # 💡 核心修复：Linux 打包时，抹除外层的 GOOS 和 GOARCH 环境变量
-            # 让 Wails3 的 Taskfile 和 Docker 内部自己去决定架构，绝对不搞外层污染
-            unset GOOS
-            unset GOARCH
-            unset CC
             task package ARCH=${{ matrix.arch }}
-            
           else
-            # Windows 保持原样
-            export GOOS=windows
-            export GOARCH=${{ matrix.arch }}
-            # 动态控制 Windows ARM64 交叉编译时的 CGO 和编译器
-            if [ "${{ matrix.arch }}" = "arm64" ]; then
-              export CGO_ENABLED=1
-              export CC="clang --target=aarch64-w64-windows-gnu"
-            else
-              export CGO_ENABLED=1
-              export CC="gcc"
-            fi
             task build ARCH=${{ matrix.arch }}
           fi
         shell: bash
-        # 💡 注意：把原本写在顶级 env: 里的 GOOS、GOARCH、CC 全部删掉，改在上面脚本内部用 export 精准控制
         env:
           CGO_ENABLED: 1
-      
-      # 5. 准备发布产物 (已适配 ARM64 后缀)
+          GOOS: ${{ matrix.platform }}
+          GOARCH: ${{ matrix.arch }}
+          CC: ${{ matrix.os == 'windows-latest' && matrix.arch == 'amd64' && 'gcc' || (matrix.os == 'windows-latest' && matrix.arch == 'arm64' && 'clang --target=aarch64-w64-windows-gnu' || '') }}
+
+       Pemb备发布产物
       - name: Package Artifacts
         run: |
-          # 💡 注意：由于我们在全平台矩阵运行，首先要确保从项目根目录开始算路径
           if [ "${{ matrix.platform }}" = "darwin" ]; then
             cd bin
             zip -r "../${{ env.APP_NAME }}-mac-${{ matrix.arch }}.zip" "${{ env.APP_NAME }}.app"
-            
           elif [ "${{ matrix.platform }}" = "windows" ]; then
-            # 1. 探测 Wails3 实际的输出目录
             TARGET_DIR="."
-            if [ -d "build/bin" ]; then
-              TARGET_DIR="build/bin"
-            elif [ -d "bin" ]; then
-              TARGET_DIR="bin"
-            fi
-            echo "Found Wails build output directory: $TARGET_DIR"
-            
-            # 2. 创建一个绝对干净的临时目录
+            if [ -d "build/bin" ]; then TARGET_DIR="build/bin"; elif [ -d "bin" ]; then TARGET_DIR="bin"; fi
             mkdir -p ../windows-release
-            
-            # 3. 拷贝产物
             cp "$TARGET_DIR/${{ env.APP_NAME }}.exe" ../windows-release/
             cp $TARGET_DIR/*.dll ../windows-release/ 2>/dev/null || true
-            
-            # 4. 进入临时目录压缩，带上精准的架构后缀（amd64 或 arm64）
             cd ../windows-release
             7z a "../${{ env.APP_NAME }}-windows-${{ matrix.arch }}.zip" ./*
-            
           elif [ "${{ matrix.platform }}" = "linux" ]; then
             cd bin
-            # 1. 处理安装包 (AppImage, deb, rpm)
             for f in *.{AppImage,deb,rpm}; do
               if [ -f "$f" ]; then
                 ext="${f##*.}"
                 mv "$f" "../${{ env.APP_NAME }}-linux-${{ matrix.arch }}.${ext}"
               fi
             done
-            
-            # 2. 提供 Linux “绿色版”二进制压缩包
             if [ -f "${{ env.APP_NAME }}" ]; then
               mkdir -p linux-release
               cp ${{ env.APP_NAME }} linux-release/
@@ -175,7 +122,6 @@ jobs:
           fi
         shell: bash
 
-      # 6. 发布产物 (无需修改，自动动态识别所有包)
       - name: Upload Release Assets
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
@@ -184,5 +130,64 @@ jobs:
             ${{ env.APP_NAME }}-mac-*
             ${{ env.APP_NAME }}-windows-*
             ${{ env.APP_NAME }}-linux-*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # =================================================================
+  # Job 2: 专门隔离出来给 Linux ARM64 的不污染全新环境（100% 解决 Docker 冲突）
+  # =================================================================
+  build-linux-arm64:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 💡 极其重要：只安装基础 Go 环境，这里绝不给系统安装任何本地 C 编译器（无 gcc 污染）
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Install Tools
+        run: |
+          go install github.com/go-task/task/v3/cmd/task@latest
+          go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.91
+          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+
+      # 💡 让官方 Wails Docker 镜像纯净启动，接管一切交叉编译
+      - name: Build with Docker Cross-Compiler
+        run: |
+          echo "Initializing official wails-cross Docker image..."
+          wails3 task setup:docker
+          
+          echo "Running package for linux arm64..."
+          task package ARCH=arm64
+        shell: bash
+        # 💡 这里完全不声明任何 GOOS, GOARCH 或 CC 全局变量！避免把宿主机环境漏给 Docker
+
+      - name: Package Artifacts
+        run: |
+          cd bin
+          for f in *.{AppImage,deb,rpm}; do
+            if [ -f "$f" ]; then
+              ext="${f##*.}"
+              mv "$f" "../${{ env.APP_NAME }}-linux-arm64.${ext}"
+            fi
+          done
+          if [ -f "${{ env.APP_NAME }}" ]; then
+            mkdir -p linux-release
+            cp ${{ env.APP_NAME }} linux-release/
+            cp *.so linux-release/ 2>/dev/null || true
+            tar -czf "../${{ env.APP_NAME }}-linux-arm64.tar.gz" -C linux-release .
+          fi
+        shell: bash
+
+      - name: Upload Release Assets
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: ${{ env.APP_NAME }}-linux-arm64.*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
