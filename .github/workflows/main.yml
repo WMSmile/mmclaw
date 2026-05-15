@@ -8,7 +8,7 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  APP_NAME: mmclaw  # 💡 在这里统一配置你的应用名称，方便后续重用
+  APP_NAME: mmclaw  # 💡 统一配置应用名称
 
 jobs:
   build:
@@ -25,9 +25,17 @@ jobs:
           - os: windows-latest
             platform: windows
             arch: amd64
+          # 💡 新增：Windows ARM64 支持
+          - os: windows-latest
+            platform: windows
+            arch: arm64
           - os: ubuntu-latest
             platform: linux
             arch: amd64
+          # 💡 新增：Linux ARM64 支持
+          - os: ubuntu-latest
+            platform: linux
+            arch: arm64
 
     runs-on: ${{ matrix.os }}
     permissions:
@@ -42,7 +50,9 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config build-essential
+          # 💡 针对 Linux ARM64 交叉编译，补充 gcc-aarch64-linux-gnu 编译器
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config build-essential \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -52,16 +62,14 @@ jobs:
       # 2. 安装 Task 和 Wails3 CLI
       - name: Install Tools
         run: |
-          # 安装 Task
           go install github.com/go-task/task/v3/cmd/task@latest
-          # 安装 Wails3
           go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.91
-          # 确保它们都在 PATH 中
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
-      # 3. 针对 Windows 准备 CGO 编译器 (使用更稳定的 MSYS2)
-      - name: Install MinGW (Windows only)
-        if: matrix.os == 'windows-latest'
+      # 3. 针对 Windows amd64 准备 CGO 编译器 (使用稳定的 MSYS2)
+      # 💡 针对 Windows arm64，由于 GCC 环境不同，这里加上 arch 过滤
+      - name: Install MinGW (Windows AMD64 only)
+        if: matrix.os == 'windows-latest' && matrix.arch == 'amd64'
         uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
@@ -74,29 +82,29 @@ jobs:
           if [ "${{ matrix.platform }}" = "darwin" ]; then
             task package ARCH=${{ matrix.arch }}
           elif [ "${{ matrix.platform }}" = "linux" ]; then
-            # Linux 运行 package 任务来生成 AppImage/deb/rpm
             task package ARCH=${{ matrix.arch }}
           else
-            CGO_ENABLED=1 task build ARCH=${{ matrix.arch }}
+            task build ARCH=${{ matrix.arch }}
           fi
         shell: bash
         env:
-          CGO_ENABLED: 1
+          # 💡 动态控制 CGO：Windows arm64 交叉编译时默认关闭 CGO 避开本地编译器冲突
+          CGO_ENABLED: ${{ (matrix.platform == 'windows' && matrix.arch == 'arm64') && '0' || '1' }}
           GOOS: ${{ matrix.platform }}
           GOARCH: ${{ matrix.arch }}
-          CC: ${{ matrix.os == 'windows-latest' && 'gcc' || '' }}
+          # 💡 Linux arm64 使用专属交叉编译器
+          CC: ${{ matrix.platform == 'linux' && matrix.arch == 'arm64' && 'aarch64-linux-gnu-gcc' || (matrix.os == 'windows-latest' && matrix.arch == 'amd64' && 'gcc' || '') }}
 
-      # 5. 准备发布产物 (已修复名称问题)
+      # 5. 准备发布产物 (已适配 ARM64 后缀)
       - name: Package Artifacts
         run: |
-          cd bin
+          # 💡 注意：由于我们在全平台矩阵运行，首先要确保从项目根目录开始算路径
           if [ "${{ matrix.platform }}" = "darwin" ]; then
-            # macOS: 打包新应用 mmclaw.app
+            cd bin
             zip -r "../${{ env.APP_NAME }}-mac-${{ matrix.arch }}.zip" "${{ env.APP_NAME }}.app"
             
           elif [ "${{ matrix.platform }}" = "windows" ]; then
-            # Windows: 打包新应用 mmclaw.exe 和相关的 dll
-            # 1. 探测 Wails3 实际的输出目录（优先 build/bin，其次 bin，最后当前目录）
+            # 1. 探测 Wails3 实际的输出目录
             TARGET_DIR="."
             if [ -d "build/bin" ]; then
               TARGET_DIR="build/bin"
@@ -105,23 +113,23 @@ jobs:
             fi
             echo "Found Wails build output directory: $TARGET_DIR"
             
-            # 2. 创建一个绝对干净的临时目录用来收集发布文件
+            # 2. 创建一个绝对干净的临时目录
             mkdir -p ../windows-release
             
-            # 3. 从精确的输出目录下拷贝 exe 和当前配套的 dll（不污染、不漏拷）
+            # 3. 拷贝产物
             cp "$TARGET_DIR/${{ env.APP_NAME }}.exe" ../windows-release/
             cp $TARGET_DIR/*.dll ../windows-release/ 2>/dev/null || true
             
-            # 4. 进入干净的发布目录，利用 7z 压缩
+            # 4. 进入临时目录压缩，带上精准的架构后缀（amd64 或 arm64）
             cd ../windows-release
-            7z a "../${{ env.APP_NAME }}-windows-amd64.zip" ./*
+            7z a "../${{ env.APP_NAME }}-windows-${{ matrix.arch }}.zip" ./*
             
           elif [ "${{ matrix.platform }}" = "linux" ]; then
+            cd bin
             # 1. 处理安装包 (AppImage, deb, rpm)
             for f in *.{AppImage,deb,rpm}; do
               if [ -f "$f" ]; then
                 ext="${f##*.}"
-                # 如果 Wails3 编译出来的包名已经是 mmclaw 开头，这里直接重命名归档
                 mv "$f" "../${{ env.APP_NAME }}-linux-${{ matrix.arch }}.${ext}"
               fi
             done
@@ -136,7 +144,7 @@ jobs:
           fi
         shell: bash
 
-      # 6. 发布产物 (已修复上传匹配规则)
+      # 6. 发布产物 (无需修改，自动动态识别所有包)
       - name: Upload Release Assets
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
