@@ -134,17 +134,24 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # =================================================================
-  # Job 2: 专门隔离出来给 Linux ARM64 的不污染全新环境（100% 解决 Docker 冲突）
+  # Job 2: 利用 GitHub 官方原生 ARM64 虚拟机进行高速物理编译（推荐 🌟）
   # =================================================================
   build-linux-arm64:
-    runs-on: ubuntu-latest
+    # 💡 核心改变：把 ubuntu-latest 换成 ubuntu-latest-arm64
+    # 这样 GitHub 会直接分给你一台真正的 ARM64 架构服务器！
+    runs-on: ubuntu-latest-arm64
     permissions:
       contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 💡 极其重要：只安装基础 Go 环境，这里绝不给系统安装任何本地 C 编译器（无 gcc 污染）
+      # 💡 既然是真正的 ARM64 机器，直接像常规环境一样通过 apt 安装依赖，绝对不会有任何头文件冲突
+      - name: Install Linux Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config build-essential
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
@@ -156,18 +163,11 @@ jobs:
           go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.91
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
-      # 💡 修改后的 Job 2 构建步骤
-      - name: Build with Docker Cross-Compiler
+      # 💡 重点：还原成最简单的本地打包，不需要任何 Docker，不需要设置任何乱七八糟的 CC 变量！
+      - name: Build Natively on ARM64
         run: |
-          echo "Initializing official wails-cross Docker image..."
-          wails3 task setup:docker
-          
-          echo "Running package for linux arm64 with internal package installation..."
-          # 💡 核心修正：通过传入带有前缀的参数，或在 Task 调用前，让 Wails 知道需要补齐容器内的 C 依赖
-          # 如果 Wails3 允许通过 wails3 build 传参，我们直接改用 wails3 命令行显式交叉编译，它能更聪明地处理依赖：
-          wails3 build -platform linux/arm64 -package
+          task package ARCH=arm64
         shell: bash
-        # 💡 这里完全不声明任何 GOOS, GOARCH 或 CC 全局变量！避免把宿主机环境漏给 Docker
 
       - name: Package Artifacts
         run: |
