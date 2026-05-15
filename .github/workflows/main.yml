@@ -66,9 +66,9 @@ jobs:
           go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.91
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
-      # 3. 针对 Windows amd64 准备 CGO 编译器 (使用稳定的 MSYS2)
-      # 💡 针对 Windows arm64，由于 GCC 环境不同，这里加上 arch 过滤
-      - name: Install MinGW (Windows AMD64 only)
+      # 3. 针对 Windows 准备 CGO 编译器
+      # AMD64 使用稳定的 MSYS2 环境
+      - name: Install MinGW (Windows AMD64)
         if: matrix.os == 'windows-latest' && matrix.arch == 'amd64'
         uses: msys2/setup-msys2@v2
         with:
@@ -76,7 +76,16 @@ jobs:
           update: true
           install: mingw-w64-ucrt-x86_64-gcc
 
-      # 4. 构建步骤
+      # ARM64 使用 LLVM/Clang 进行跨架构 CGO 编译
+      - name: Install LLVM/Clang (Windows ARM64)
+        if: matrix.os == 'windows-latest' && matrix.arch == 'arm64'
+        run: |
+          choco install llvm -y
+          # 将 clang 路径写入环境变量
+          echo "C:\Program Files\LLVM\bin" >> $GITHUB_PATH
+        shell: bash
+
+      # 4. 构建步骤 (全平台强制开启 CGO_ENABLED=1)
       - name: Build with Task
         run: |
           if [ "${{ matrix.platform }}" = "darwin" ]; then
@@ -88,13 +97,11 @@ jobs:
           fi
         shell: bash
         env:
-          # 💡 动态控制 CGO：Windows arm64 交叉编译时默认关闭 CGO 避开本地编译器冲突
-          CGO_ENABLED: ${{ (matrix.platform == 'windows' && matrix.arch == 'arm64') && '0' || '1' }}
+          CGO_ENABLED: 1 # 💡 强行全平台开启 1，确保 Wails3 窗口底座编译成功
           GOOS: ${{ matrix.platform }}
           GOARCH: ${{ matrix.arch }}
-          # 💡 Linux arm64 使用专属交叉编译器
-          CC: ${{ matrix.platform == 'linux' && matrix.arch == 'arm64' && 'aarch64-linux-gnu-gcc' || (matrix.os == 'windows-latest' && matrix.arch == 'amd64' && 'gcc' || '') }}
-
+          CC: ${{ matrix.platform == 'linux' && matrix.arch == 'arm64' && 'aarch64-linux-gnu-gcc' || (matrix.os == 'windows-latest' && matrix.arch == 'amd64' && 'gcc' || (matrix.os == 'windows-latest' && matrix.arch == 'arm64' && 'clang --target=aarch64-w64-windows-gnu' || '')) }}
+          
       # 5. 准备发布产物 (已适配 ARM64 后缀)
       - name: Package Artifacts
         run: |
