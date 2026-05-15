@@ -85,29 +85,47 @@ jobs:
           echo "C:\Program Files\LLVM\bin" >> $GITHUB_PATH
         shell: bash
 
-      # 4. 构建步骤 (Docker 降级方案：让 wails 现场准备官方镜像，避开宿主机头文件污染)
+      # 4. 构建步骤 (已彻底隔离环境变量，防止污染 Linux Docker)
       - name: Build with Task
         run: |
           if [ "${{ matrix.platform }}" = "darwin" ]; then
+            # macOS 需要这些环境变量
+            export GOOS=darwin
+            export GOARCH=${{ matrix.arch }}
             task package ARCH=${{ matrix.arch }}
+            
           elif [ "${{ matrix.platform }}" = "linux" ]; then
-            # 💡 当架构为 arm64 时，先拉取/构建 wails-cross 镜像
             if [ "${{ matrix.arch }}" = "arm64" ]; then
                echo "Initializing official wails-cross Docker image..."
                wails3 task setup:docker
             fi
+            
+            # 💡 核心修复：Linux 打包时，抹除外层的 GOOS 和 GOARCH 环境变量
+            # 让 Wails3 的 Taskfile 和 Docker 内部自己去决定架构，绝对不搞外层污染
+            unset GOOS
+            unset GOARCH
+            unset CC
             task package ARCH=${{ matrix.arch }}
+            
           else
+            # Windows 保持原样
+            export GOOS=windows
+            export GOARCH=${{ matrix.arch }}
+            # 动态控制 Windows ARM64 交叉编译时的 CGO 和编译器
+            if [ "${{ matrix.arch }}" = "arm64" ]; then
+              export CGO_ENABLED=1
+              export CC="clang --target=aarch64-w64-windows-gnu"
+            else
+              export CGO_ENABLED=1
+              export CC="gcc"
+            fi
             task build ARCH=${{ matrix.arch }}
           fi
         shell: bash
+        # 💡 注意：把原本写在顶级 env: 里的 GOOS、GOARCH、CC 全部删掉，改在上面脚本内部用 export 精准控制
         env:
           CGO_ENABLED: 1
-          GOOS: ${{ matrix.platform }}
-          GOARCH: ${{ matrix.arch }}
-          # 💡 注意：因为 Linux ARM64 走 Docker 内部编译，这里必须把宿主机的交叉编译器 CC 留空，避免干扰 Docker
-          CC: ${{ matrix.os == 'windows-latest' && matrix.arch == 'amd64' && 'gcc' || (matrix.os == 'windows-latest' && matrix.arch == 'arm64' && 'clang --target=aarch64-w64-windows-gnu' || '') }}
-          
+      
       # 5. 准备发布产物 (已适配 ARM64 后缀)
       - name: Package Artifacts
         run: |
