@@ -3,11 +3,12 @@ name: Build and Release Wails3 App
 on:
   push:
     tags:
-      - 'v*' # 当你推送 v1.0.0 等标签时触发
+      - 'v*' # 当推送 v1.0.0 等标签时触发
   workflow_dispatch: # 允许手动触发测试
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  APP_NAME: mmclaw  # 💡 在这里统一配置你的应用名称，方便后续重用
 
 jobs:
   build:
@@ -29,7 +30,6 @@ jobs:
             arch: amd64
 
     runs-on: ${{ matrix.os }}
-    # 关键：添加以下权限配置
     permissions:
       contents: write  # 允许创建 Release 并上传文件
 
@@ -84,52 +84,51 @@ jobs:
           GOARCH: ${{ matrix.arch }}
           CC: ${{ matrix.os == 'windows-latest' && 'gcc' || '' }}
 
-      # 5. 准备发布产物
+      # 5. 准备发布产物 (已修复名称问题)
       - name: Package Artifacts
         run: |
           cd bin
           if [ "${{ matrix.platform }}" = "darwin" ]; then
-            # macOS: .app 本身就是文件夹，直接打成 zip 即可（已包含内部库）
-            zip -r "../video-toolkit-mac-${{ matrix.arch }}.zip" "video-toolkit.app"
+            # macOS: 打包新应用 mmclaw.app
+            zip -r "../${{ env.APP_NAME }}-mac-${{ matrix.arch }}.zip" "${{ env.APP_NAME }}.app"
             
           elif [ "${{ matrix.platform }}" = "windows" ]; then
-            # Windows: 必须把 .exe 和 .dll 一起打包，否则无法运行
+            # Windows: 打包新应用 mmclaw.exe 和相关的 dll
             mkdir -p windows-release
-            cp video-toolkit.exe windows-release/
+            cp ${{ env.APP_NAME }}.exe windows-release/
             cp *.dll windows-release/ 2>/dev/null || true
             cd windows-release
-            zip -r "../../video-toolkit-windows-${{ matrix.arch }}.zip" .
+            zip -r "../../${{ env.APP_NAME }}-windows-${{ matrix.arch }}.zip" .
             cd ..
             
           elif [ "${{ matrix.platform }}" = "linux" ]; then
-            # 1. 处理安装包 (AppImage, deb, rpm) - 这些包内部已封装了库
+            # 1. 处理安装包 (AppImage, deb, rpm)
             for f in *.{AppImage,deb,rpm}; do
               if [ -f "$f" ]; then
                 ext="${f##*.}"
-                mv "$f" "../video-toolkit-linux-${{ matrix.arch }}.${ext}"
+                # 如果 Wails3 编译出来的包名已经是 mmclaw 开头，这里直接重命名归档
+                mv "$f" "../${{ env.APP_NAME }}-linux-${{ matrix.arch }}.${ext}"
               fi
             done
             
-            # 2. 如果你也想提供“绿色版”二进制压缩包
-            if [ -f "video-toolkit" ]; then
+            # 2. 提供 Linux “绿色版”二进制压缩包
+            if [ -f "${{ env.APP_NAME }}" ]; then
               mkdir -p linux-release
-              cp video-toolkit linux-release/
+              cp ${{ env.APP_NAME }} linux-release/
               cp *.so linux-release/ 2>/dev/null || true
-              tar -czf "../video-toolkit-linux-${{ matrix.arch }}.tar.gz" -C linux-release .
+              tar -czf "../${{ env.APP_NAME }}-linux-${{ matrix.arch }}.tar.gz" -C linux-release .
             fi
           fi
+        shell: bash
 
-      # 6. 发布产物
+      # 6. 发布产物 (已修复上传匹配规则)
       - name: Upload Release Assets
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: |
-            *.zip
-            video-toolkit-windows-*
-            video-toolkit-linux-*
-            *.AppImage
-            *.deb
-            *.rpm
+            ${{ env.APP_NAME }}-mac-*
+            ${{ env.APP_NAME }}-windows-*
+            ${{ env.APP_NAME }}-linux-*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
