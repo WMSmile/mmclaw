@@ -144,32 +144,56 @@ jobs:
       - name: Build App inside Linux ARM64 Container
         if: matrix.platform == 'linux' && matrix.arch == 'arm64'
         run: |
-          # 启动一个 arm64v8 的 Ubuntu 容器，映射当前工作目录
           docker run --rm \
             --platform linux/arm64 \
             -v ${{ github.workspace }}:/workspace \
             -w /workspace \
             arm64v8/ubuntu:22.04 /bin/bash -c "
-              # 1. 安装基础依赖与 GTK3 编译环境
-              apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
-                build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev wget curl git
+              set -e
 
-              # 2. 安装并配置 Go 环境
-              wget https://go.dev/dl/go1.22.0.linux-arm64.tar.gz
-              tar -C /usr/local -xzf go1.22.0.linux-arm64.tar.gz
-              export PATH=\$PATH:/usr/local/go/bin
+              echo '=== Install Dependencies ==='
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y \
+                build-essential \
+                pkg-config \
+                libgtk-3-dev \
+                libwebkit2gtk-4.1-dev \
+                wget \
+                curl \
+                git \
+                ca-certificates \
+                xz-utils \
+                gnupg  # <- 新增：确保 NodeSource 脚本写入公钥时不报错
+
+              # 安装 Node.js 20 + npm
+              curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+              apt-get install -y nodejs
+
+              node -v
+              npm -v
+
+              echo '=== Install Go 1.25 ==='
+              wget https://go.dev/dl/go1.25.0.linux-arm64.tar.gz
+              tar -C /usr/local -xzf go1.25.0.linux-arm64.tar.gz
+
+              # 统一和简化路径配置，防止多行 export 导致转义丢失
               export GOPATH=/root/go
-              export PATH=\$PATH:\$GOPATH/bin
+              export PATH=/usr/local/go/bin:/root/go/bin:\$PATH
 
-              # 3. 安装 Wails3 和 Task
+              go version
+
+              # 禁止自动下载 toolchain
+              export GOTOOLCHAIN=local
+
+              echo '=== Install Task & Wails3 ==='
               go install github.com/go-task/task/v3/cmd/task@latest
               go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.91
 
-              # 4. 执行打包逻辑
-              echo 'Building inside ARM64 container...'
+              echo '=== Build ==='
               export CGO_ENABLED=1
               export GOOS=linux
               export GOARCH=arm64
+
               task package ARCH=arm64
             "
 
