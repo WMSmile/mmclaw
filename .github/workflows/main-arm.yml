@@ -1,0 +1,209 @@
+name: Build and Release Wails3 App
+
+on:
+  push:
+    tags:
+      - 'sv*'
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  APP_NAME: mmclaw
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+
+    permissions:
+      contents: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS
+          - os: macos-latest
+            platform: darwin
+            arch: amd64
+
+          - os: macos-latest
+            platform: darwin
+            arch: arm64
+
+          # Windows
+          - os: windows-latest
+            platform: windows
+            arch: amd64
+
+          - os: windows-latest
+            platform: windows
+            arch: arm64
+
+          # Linux
+          - os: ubuntu-latest
+            platform: linux
+            arch: amd64
+
+          # 【目标矩阵】Linux ARM64
+          - os: ubuntu-latest-arm64
+            platform: linux
+            arch: arm64
+
+    steps:
+      # =========================================================
+      # Checkout
+      # =========================================================
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # =========================================================
+      # Linux Native Dependencies (ONLY linux amd64)
+      # =========================================================
+      - name: Install Linux Dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            pkg-config \
+            build-essential
+
+      # =========================================================
+      # Setup Go (跳过 Linux arm64，因为容器内部会自己处理或使用容器内的环境)
+      # =========================================================
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      # =========================================================
+      # Install Wails3 + Task (跳过 Linux arm64)
+      # =========================================================
+      - name: Install Tools
+        run: |
+          go install github.com/go-task/task/v3/cmd/task@latest
+          go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.91
+          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+
+      # =========================================================
+      # Windows AMD64 Compiler
+      # =========================================================
+      - name: Install MinGW
+        if: matrix.platform == 'windows' && matrix.arch == 'amd64'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-gcc
+
+      - name: Add MinGW to PATH
+        if: matrix.platform == 'windows' && matrix.arch == 'amd64'
+        run: echo "C:\msys64\ucrt64\bin" >> $GITHUB_PATH
+
+      # =========================================================
+      # Windows ARM64 Compiler
+      # =========================================================
+      - name: Install LLVM
+        if: matrix.platform == 'windows' && matrix.arch == 'arm64'
+        run: |
+          choco install llvm -y
+          echo "C:\Program Files\LLVM\bin" >> $GITHUB_PATH
+        shell: bash
+
+      # =========================================================
+      # Native Build (ALL except Linux ARM64)
+      # =========================================================
+      - name: Build Native App
+        shell: bash
+        env:
+          CGO_ENABLED: 1
+          GOOS: ${{ matrix.platform }}
+          GOARCH: ${{ matrix.arch }}
+          CC: ${{ matrix.platform == 'windows' && matrix.arch == 'amd64' && 'gcc' || (matrix.platform == 'windows' && matrix.arch == 'arm64' && 'clang --target=aarch64-w64-windows-gnu' || '') }}
+        run: |
+          echo "Building natively..."
+          if [ "${{ matrix.platform }}" = "windows" ]; then
+            task build ARCH=${{ matrix.arch }}
+          else
+            task package ARCH=${{ matrix.arch }}
+          fi
+
+      # =========================================================
+      # Debug Output
+      # =========================================================
+      - name: Debug Build Output
+        shell: bash
+        run: |
+          echo "=== ROOT ==="
+          ls -la
+          echo "=== BIN ==="
+          ls -la bin || true
+          echo "=== BUILD/BIN ==="
+          ls -la build/bin || true
+
+      # =========================================================
+      # Package Artifacts
+      # =========================================================
+      - name: Package Artifacts
+        shell: bash
+        run: |
+          # =========================
+          # macOS
+          # =========================
+          if [ "${{ matrix.platform }}" = "darwin" ]; then
+            cd bin
+            zip -r "../${{ env.APP_NAME }}-mac-${{ matrix.arch }}.zip" "${{ env.APP_NAME }}.app"
+
+          # =========================
+          # Windows
+          # =========================
+          elif [ "${{ matrix.platform }}" = "windows" ]; then
+            mkdir -p ./windows-source
+            mkdir -p ./windows-out
+            TARGET_DIR="."
+            if [ -d "build/bin" ]; then
+              TARGET_DIR="build/bin"
+            elif [ -d "bin" ]; then
+              TARGET_DIR="bin"
+            fi
+            cp "$TARGET_DIR/${{ env.APP_NAME }}.exe" ./windows-source/
+            cp $TARGET_DIR/*.dll ./windows-source/ 2>/dev/null || true
+            "/c/Program Files/7-Zip/7z.exe" a "./windows-out/${{ env.APP_NAME }}-windows-${{ matrix.arch }}.zip" ./windows-source/*
+            mv ./windows-out/*.zip ./
+
+          # =========================
+          # Linux (AMD64 与 ARM64 会共用此逻辑)
+          # =========================
+          elif [ "${{ matrix.platform }}" = "linux" ]; then
+            cd bin
+            # 处理打包出的 AppImage / deb / rpm
+            for f in *.{AppImage,deb,rpm}; do
+              if [ -f "$f" ]; then
+                ext="${f##*.}"
+                mv "$f" "../${{ env.APP_NAME }}-linux-${{ matrix.arch }}.${ext}"
+              fi
+            done
+
+            # 处理纯二进制 tar.gz
+            if [ -f "${{ env.APP_NAME }}" ]; then
+              mkdir -p linux-release
+              cp "${{ env.APP_NAME }}" linux-release/
+              cp *.so linux-release/ 2>/dev/null || true
+              tar -czf "../${{ env.APP_NAME }}-linux-${{ matrix.arch }}.tar.gz" -C linux-release .
+            fi
+          fi
+
+      # =========================================================
+      # Upload Release Assets
+      # =========================================================
+      - name: Upload Release Assets
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            ${{ env.APP_NAME }}-mac-*
+            ${{ env.APP_NAME }}-windows-*
+            ${{ env.APP_NAME }}-linux-*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
