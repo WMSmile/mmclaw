@@ -144,16 +144,20 @@ jobs:
       - name: Build App inside Linux ARM64 Container
         if: matrix.platform == 'linux' && matrix.arch == 'arm64'
         run: |
+          # 1. 开启最彻底的 QEMU 宿主机注册，确保全面支持 ARM64 的复杂程序（如 AppImage）
+          docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+
+          # 2. 运行容器时，必须加上 --privileged，否则 AppImage 内部挂载文件系统会失败
           docker run --rm \
+            --privileged \
             --platform linux/arm64 \
             -v ${{ github.workspace }}:/workspace \
             -w /workspace \
             arm64v8/ubuntu:22.04 /bin/bash -c "
-      
               set -e
-      
+
+              echo '=== Install Dependencies ==='
               apt-get update
-      
               DEBIAN_FRONTEND=noninteractive apt-get install -y \
                 build-essential \
                 pkg-config \
@@ -163,41 +167,41 @@ jobs:
                 curl \
                 git \
                 ca-certificates \
-                xz-utils
-      
-              # Node.js
+                xz-utils \
+                gnupg \
+                fuse  # <- 新增：AppImage 运行依赖 fuse
+
+              # 安装 Node.js 20 + npm
               curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
               apt-get install -y nodejs
-      
+
               node -v
               npm -v
-      
-              # Install latest Go
-              GO_VERSION=\$(curl -s https://go.dev/VERSION?m=text | head -n 1)
-      
-              echo \"Installing \$GO_VERSION\"
-      
-              wget https://go.dev/dl/\${GO_VERSION}.linux-arm64.tar.gz
-      
-              tar -C /usr/local -xzf \${GO_VERSION}.linux-arm64.tar.gz
-      
-              export PATH=/usr/local/go/bin:\$PATH
+
+              echo '=== Install Go 1.25.10 ==='
+              wget https://go.dev/dl/go1.25.10.linux-arm64.tar.gz
+              tar -C /usr/local -xzf go1.25.10.linux-arm64.tar.gz
+
+              # 路径配置
               export GOPATH=/root/go
-              export PATH=\$GOPATH/bin:\$PATH
-      
-              export GOTOOLCHAIN=local
-      
+              export PATH=/usr/local/go/bin:/root/go/bin:\$PATH
+
               go version
-      
-              # Install tools
-              go install github.com/go-task/task/v3/cmd/task@latest
+              export GOTOOLCHAIN=local
+
+              echo '=== Install Task & Wails3 ==='
+              go install github.com/go-task/task/v3/cmd/task@v3.38.0
               go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.91
-      
-              # Build
+
+              echo '=== Build ==='
               export CGO_ENABLED=1
               export GOOS=linux
               export GOARCH=arm64
-      
+
+              # 告诉 linuxdeploy 不要尝试用 FUSE 挂载（QEMU 内部可能不支持真实挂载）
+              # 而是直接解压运行，这是在 Docker 内打包 AppImage 的标准做法
+              export APPIMAGE_EXTRACT_AND_RUN=1
+
               task package ARCH=arm64
             "
 
