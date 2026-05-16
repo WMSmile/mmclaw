@@ -149,10 +149,11 @@ jobs:
             -v ${{ github.workspace }}:/workspace \
             -w /workspace \
             arm64v8/ubuntu:22.04 /bin/bash -c "
+      
               set -e
-
-              echo '=== Install Dependencies ==='
+      
               apt-get update
+      
               DEBIAN_FRONTEND=noninteractive apt-get install -y \
                 build-essential \
                 pkg-config \
@@ -162,38 +163,41 @@ jobs:
                 curl \
                 git \
                 ca-certificates \
-                xz-utils \
-                gnupg  # <- 新增：确保 NodeSource 脚本写入公钥时不报错
-
-              # 安装 Node.js 20 + npm
+                xz-utils
+      
+              # Node.js
               curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
               apt-get install -y nodejs
-
+      
               node -v
               npm -v
-
-              echo '=== Install Go 1.25 ==='
-              wget https://go.dev/dl/go1.25.0.linux-arm64.tar.gz
-              tar -C /usr/local -xzf go1.25.0.linux-arm64.tar.gz
-
-              # 统一和简化路径配置，防止多行 export 导致转义丢失
+      
+              # Install latest Go
+              GO_VERSION=\$(curl -s https://go.dev/VERSION?m=text | head -n 1)
+      
+              echo \"Installing \$GO_VERSION\"
+      
+              wget https://go.dev/dl/\${GO_VERSION}.linux-arm64.tar.gz
+      
+              tar -C /usr/local -xzf \${GO_VERSION}.linux-arm64.tar.gz
+      
+              export PATH=/usr/local/go/bin:\$PATH
               export GOPATH=/root/go
-              export PATH=/usr/local/go/bin:/root/go/bin:\$PATH
-
-              go version
-
-              # 禁止自动下载 toolchain
+              export PATH=\$GOPATH/bin:\$PATH
+      
               export GOTOOLCHAIN=local
-
-              echo '=== Install Task & Wails3 ==='
+      
+              go version
+      
+              # Install tools
               go install github.com/go-task/task/v3/cmd/task@latest
               go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.91
-
-              echo '=== Build ==='
+      
+              # Build
               export CGO_ENABLED=1
               export GOOS=linux
               export GOARCH=arm64
-
+      
               task package ARCH=arm64
             "
 
