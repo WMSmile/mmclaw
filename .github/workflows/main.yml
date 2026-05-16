@@ -144,14 +144,19 @@ jobs:
       - name: Build App inside Linux ARM64 Container
         if: matrix.platform == 'linux' && matrix.arch == 'arm64'
         run: |
-          docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+          # =========================================================
+          # 核心修复点：使用 Docker 官方维护的最先进、最新的 QEMU 仿真引擎
+          # 彻底解决旧版 multiarch/qemu 导致 Ubuntu 22.04 GCC 崩溃(cc1 139)的问题
+          # =========================================================
+          docker run --privileged --rm tonistiigi/binfmt --install all
 
+          # 重回现代的 Ubuntu 22.04 容器
           docker run --rm \
             --privileged \
             --platform linux/arm64 \
             -v ${{ github.workspace }}:/workspace \
             -w /workspace \
-            arm64v8/ubuntu:20.04 /bin/bash -c "
+            arm64v8/ubuntu:22.04 /bin/bash -c "
               set -e
 
               echo '=== Install Dependencies ==='
@@ -160,7 +165,7 @@ jobs:
                 build-essential \
                 pkg-config \
                 libgtk-3-dev \
-                libwebkit2gtk-4.0-dev \  # <- 修改点：Ubuntu 20.04 下改为 4.0
+                libwebkit2gtk-4.1-dev \  # <- 顺利迎回 4.1 最新依赖
                 wget \
                 curl \
                 git \
@@ -169,7 +174,7 @@ jobs:
                 gnupg \
                 fuse
 
-              # 安装 Node.js 20 + npm
+              # 安装稳定的 Node.js 20 + npm
               curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
               apt-get install -y nodejs
 
@@ -196,6 +201,7 @@ jobs:
               export GOOS=linux
               export GOARCH=arm64
 
+              # 开启 Docker 容器内打包 AppImage 的防错开关
               export APPIMAGE_EXTRACT_AND_RUN=1
               export NO_STRIP=1
 
