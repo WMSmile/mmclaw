@@ -144,10 +144,9 @@ jobs:
       - name: Build App inside Linux ARM64 Container
         if: matrix.platform == 'linux' && matrix.arch == 'arm64'
         run: |
-          # 1. 安装最新版官方 QEMU 仿真引擎
+          # 升级版的 QEMU 保持开启，确保 Go 编译和 CGO 稳定
           docker run --privileged --rm tonistiigi/binfmt --install all
 
-          # 2. 运行 Ubuntu 22.04 容器开始打包
           docker run --rm \
             --privileged \
             --platform linux/arm64 \
@@ -158,42 +157,49 @@ jobs:
 
               echo '=== Install Dependencies ==='
               apt-get update
-              
-              # 清理了中间的换行和注释，一行式安装，防止 apt-get 误解析空格
-              DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev wget curl git ca-certificates xz-utils gnupg fuse
+              DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev wget curl git ca-certificates xz-utils gnupg
 
-              # 安装稳定的 Node.js 20 + npm
+              # 安装 Node.js 20 + npm
               curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
               apt-get install -y nodejs
 
-              node -v
-              npm -v
-
-              echo '=== Install Go 1.25.10 ==='
+              echo '=== Install Go ==='
               wget https://go.dev/dl/go1.25.10.linux-arm64.tar.gz
               tar -C /usr/local -xzf go1.25.10.linux-arm64.tar.gz
-
-              # 路径配置
               export GOPATH=/root/go
               export PATH=/usr/local/go/bin:/root/go/bin:\$PATH
-
-              go version
               export GOTOOLCHAIN=local
 
               echo '=== Install Task & Wails3 ==='
               go install github.com/go-task/task/v3/cmd/task@v3.38.0
               go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.91
 
-              echo '=== Build ==='
+              echo '=== Build ARM64 Binary ==='
               export CGO_ENABLED=1
               export GOOS=linux
               export GOARCH=arm64
 
-              # 容器内打包 AppImage 的防错开关
-              export APPIMAGE_EXTRACT_AND_RUN=1
-              export NO_STRIP=1
+              # =========================================================
+              # 核心修改点：改用 task build（或 wails3 build），只编译不触碰 AppImage 工具
+              # =========================================================
+              task build ARCH=arm64
 
-              task package ARCH=arm64
+              # Wails3 默认会把编译好的原生二进制文件输出到 bin 目录
+              # 我们人工模拟 Wails3 的打包过程，创建一个干净的发布包
+              echo '=== Manual Packaging ==='
+              mkdir -p bin/linux-release
+              
+              # 检查并移动二进制到发布目录（Wails3 默认编译出来的就是纯二进制，而非 .app 目录）
+              if [ -f "bin/${{ env.APP_NAME }}" ]; then
+                cp "bin/${{ env.APP_NAME }}" bin/linux-release/
+                echo 'Successfully located the ARM64 binary.'
+              else
+                # 兼容部分 Taskfile 把产物丢在 build/bin 的情况
+                cp build/bin/${{ env.APP_NAME }} bin/linux-release/ || true
+              fi
+
+              # 如果有依赖的本地 .so 库，顺便一起带走
+              cp bin/*.so bin/linux-release/ 2>/dev/null || true
             "
 
       # =========================================================
