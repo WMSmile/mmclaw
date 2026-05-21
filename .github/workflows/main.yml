@@ -85,7 +85,7 @@ jobs:
         if: matrix.platform != 'linux' || matrix.arch != 'arm64'
         run: |
           go install github.com/go-task/task/v3/cmd/task@latest
-          go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.91
+          go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.95
           echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
       # =========================================================
@@ -171,7 +171,7 @@ jobs:
 
               echo '=== Install Task & Wails3 ==='
               go install github.com/go-task/task/v3/cmd/task@v3.38.0
-              go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.91
+              go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha.95
 
               echo '=== Build ARM64 Binary ==='
               export CGO_ENABLED=1
