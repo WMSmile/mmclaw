@@ -3,7 +3,7 @@ name: Build and Release Wails3 App
 on:
   push:
     tags:
-      - 'v*'
+      - 'sssv*'
   workflow_dispatch:
 
 env:
