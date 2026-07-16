@@ -1,0 +1,284 @@
+name: Build and Release Wails3 App (alpha2.117)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  APP_NAME: mmclaw
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+
+    permissions:
+      contents: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS
+          - os: macos-latest
+            platform: darwin
+            arch: amd64
+
+          - os: macos-latest
+            platform: darwin
+            arch: arm64
+
+          # Windows
+          - os: windows-latest
+            platform: windows
+            arch: amd64
+
+          - os: windows-latest
+            platform: windows
+            arch: arm64
+
+          # Linux
+          - os: ubuntu-latest
+            platform: linux
+            arch: amd64
+
+          # 【目标矩阵】Linux ARM64
+          - os: ubuntu-latest
+            platform: linux
+            arch: arm64
+
+    steps:
+      # =========================================================
+      # Checkout
+      # =========================================================
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # =========================================================
+      # Linux Native Dependencies (ONLY linux amd64)
+      # =========================================================
+      - name: Install Linux Dependencies
+        if: matrix.platform == 'linux' && matrix.arch == 'amd64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-4-dev \
+            libwebkitgtk-6.0-dev \
+            pkg-config \
+            build-essential
+
+      # =========================================================
+      # Setup Go (跳过 Linux arm64，因为容器内部会自己处理或使用容器内的环境)
+      # =========================================================
+      - name: Setup Go
+        if: matrix.platform != 'linux' || matrix.arch != 'arm64'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      # =========================================================
+      # Install Wails3 + Task (跳过 Linux arm64)
+      # =========================================================
+      - name: Install Tools
+        if: matrix.platform != 'linux' || matrix.arch != 'arm64'
+        run: |
+          go install github.com/go-task/task/v3/cmd/task@latest
+          go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.117
+          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+
+      # =========================================================
+      # Windows AMD64 Compiler
+      # =========================================================
+      - name: Install MinGW
+        if: matrix.platform == 'windows' && matrix.arch == 'amd64'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-gcc
+
+      - name: Add MinGW to PATH
+        if: matrix.platform == 'windows' && matrix.arch == 'amd64'
+        run: echo "C:\msys64\ucrt64\bin" >> $GITHUB_PATH
+
+      # =========================================================
+      # Windows ARM64 Compiler
+      # =========================================================
+      - name: Install LLVM
+        if: matrix.platform == 'windows' && matrix.arch == 'arm64'
+        run: |
+          choco install llvm -y
+          echo "C:\Program Files\LLVM\bin" >> $GITHUB_PATH
+        shell: bash
+
+      # =========================================================
+      # Native Build (ALL except Linux ARM64)
+      # =========================================================
+      - name: Build Native App
+        if: matrix.platform != 'linux' || matrix.arch != 'arm64'
+        shell: bash
+        env:
+          CGO_ENABLED: 1
+          GOOS: ${{ matrix.platform }}
+          GOARCH: ${{ matrix.arch }}
+          CC: ${{ matrix.platform == 'windows' && matrix.arch == 'amd64' && 'gcc' || (matrix.platform == 'windows' && matrix.arch == 'arm64' && 'clang --target=aarch64-w64-windows-gnu' || '') }}
+        run: |
+          echo "Building natively..."
+          if [ "${{ matrix.platform }}" = "windows" ]; then
+            task build ARCH=${{ matrix.arch }}
+          else
+            task package ARCH=${{ matrix.arch }}
+          fi
+
+      # =========================================================
+      # 【新增】Linux ARM64 QEMU 环境搭建与打包
+      # =========================================================
+      - name: Set up QEMU for Linux ARM64
+        if: matrix.platform == 'linux' && matrix.arch == 'arm64'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Build App inside Linux ARM64 Container
+        if: matrix.platform == 'linux' && matrix.arch == 'arm64'
+        run: |
+          docker run --privileged --rm tonistiigi/binfmt --install all
+
+          docker run --rm \
+            --privileged \
+            --platform linux/arm64 \
+            -v ${{ github.workspace }}:/workspace \
+            -w /workspace \
+            arm64v8/ubuntu:24.04 /bin/bash -c " # Bumped to 24.04 for native WebKitGTK 6.0 support
+          
+              set -e
+
+              echo '=== Install Dependencies ==='
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev wget curl git ca-certificates xz-utils gnupg
+              
+              # 安装稳定的 Node.js 20 + npm
+              curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+              apt-get install -y nodejs
+
+              echo '=== Install Go ==='
+              # wget https://go.dev/dl/go1.25.10.linux-arm64.tar.gz
+              # tar -C /usr/local -xzf go1.25.10.linux-arm64.tar.gz
+              
+              GO_VERSION=\$(curl -s https://go.dev/VERSION?m=text | head -n 1)
+
+              echo \"Installing \$GO_VERSION\"
+      
+              wget https://go.dev/dl/\${GO_VERSION}.linux-arm64.tar.gz
+      
+              tar -C /usr/local -xzf \${GO_VERSION}.linux-arm64.tar.gz
+
+              
+              export GOPATH=/root/go
+              export PATH=/usr/local/go/bin:/root/go/bin:\$PATH
+              export GOTOOLCHAIN=local
+
+              echo '=== Install Task & Wails3 ==='
+              go install github.com/go-task/task/v3/cmd/task@v3.38.0
+              go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-alpha2.117
+
+              echo '=== Build ARM64 Binary ==='
+              export CGO_ENABLED=1
+              export GOOS=linux
+              export GOARCH=arm64
+
+              # 纯粹编译
+              task build ARCH=arm64
+
+              echo '=== Manual Packaging inside Docker ==='
+              mkdir -p bin/linux-release
+              cp bin/${{ env.APP_NAME }} bin/linux-release/
+              cp bin/*.so bin/linux-release/ 2>/dev/null || true
+
+              # =========================================================
+              # 核心修复点：将 bin 目录的控制权交还给宿主机的普通 runner 用户
+              # =========================================================
+              echo '=== Fix Permissions ==='
+              chown -R ${{ secrets.RUNNER_UID || 1001 }}:${{ secrets.RUNNER_GID || 121 }} bin/
+            "
+
+      # =========================================================
+      # Debug Output
+      # =========================================================
+      - name: Debug Build Output
+        shell: bash
+        run: |
+          echo "=== ROOT ==="
+          ls -la
+          echo "=== BIN ==="
+          ls -la bin || true
+          echo "=== BUILD/BIN ==="
+          ls -la build/bin || true
+
+      # =========================================================
+      # Package Artifacts
+      # =========================================================
+      - name: Package Artifacts
+        shell: bash
+        run: |
+          # =========================
+          # macOS
+          # =========================
+          if [ "${{ matrix.platform }}" = "darwin" ]; then
+            cd bin
+            zip -r "../${{ env.APP_NAME }}-mac-${{ matrix.arch }}.zip" "${{ env.APP_NAME }}.app"
+
+          # =========================
+          # Windows
+          # =========================
+          elif [ "${{ matrix.platform }}" = "windows" ]; then
+            mkdir -p ./windows-source
+            mkdir -p ./windows-out
+            TARGET_DIR="."
+            if [ -d "build/bin" ]; then
+              TARGET_DIR="build/bin"
+            elif [ -d "bin" ]; then
+              TARGET_DIR="bin"
+            fi
+            cp "$TARGET_DIR/${{ env.APP_NAME }}.exe" ./windows-source/
+            cp $TARGET_DIR/*.dll ./windows-source/ 2>/dev/null || true
+            "/c/Program Files/7-Zip/7z.exe" a "./windows-out/${{ env.APP_NAME }}-windows-${{ matrix.arch }}.zip" ./windows-source/*
+            mv ./windows-out/*.zip ./
+
+          # =========================
+          # Linux (AMD64 与 ARM64 会共用此逻辑)
+          # =========================
+          elif [ "${{ matrix.platform }}" = "linux" ]; then
+            cd bin
+            # 处理打包出的 AppImage / deb / rpm
+            for f in *.{AppImage,deb,rpm}; do
+              if [ -f "$f" ]; then
+                ext="${f##*.}"
+                mv "$f" "../${{ env.APP_NAME }}-linux-${{ matrix.arch }}.${ext}"
+              fi
+            done
+
+            # 处理纯二进制 tar.gz
+            if [ -f "${{ env.APP_NAME }}" ]; then
+              mkdir -p linux-release
+              cp "${{ env.APP_NAME }}" linux-release/
+              cp *.so linux-release/ 2>/dev/null || true
+              tar -czf "../${{ env.APP_NAME }}-linux-${{ matrix.arch }}.tar.gz" -C linux-release .
+            fi
+          fi
+
+      # =========================================================
+      # Upload Release Assets
+      # =========================================================
+      - name: Upload Release Assets
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            ${{ env.APP_NAME }}-mac-*
+            ${{ env.APP_NAME }}-windows-*
+            ${{ env.APP_NAME }}-linux-*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
