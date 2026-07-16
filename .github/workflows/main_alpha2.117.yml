@@ -148,13 +148,17 @@ jobs:
 
           docker run --rm \
             --privileged \
-            --network host \
+            --dns 8.8.8.8 \
             --platform linux/arm64 \
             -v ${{ github.workspace }}:/workspace \
             -w /workspace \
             arm64v8/ubuntu:24.04 /bin/bash -c " # Bumped to 24.04 for native WebKitGTK 6.0 support
           
               set -e
+              
+              # 强制 apt 仅使用 IPv4 并将源替换为中科大镜像源
+              echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+              sed -i 's|ports.ubuntu.com|mirrors.ustc.edu.cn|g' /etc/apt/sources.list
 
               echo '=== Install Dependencies ==='
               apt-get update
