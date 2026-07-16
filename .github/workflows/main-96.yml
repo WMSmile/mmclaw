@@ -3,7 +3,7 @@ name: Build and Release Wails3 App (96)
 on:
   push:
     tags:
-      - 'v*'
+      - 'vVV*'
   workflow_dispatch:
 
 env:
